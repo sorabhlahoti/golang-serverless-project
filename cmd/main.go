@@ -1,41 +1,19 @@
 package main
 
 import (
+	"context"
 	"os"
+
+	"github.com/aws/aws-sdk-go-v2/config"
 
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-lambda-go/lambda"
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/dynamodb/dynamodbiface"
-	"github.com/aws/aws/aws-sdk-go/service/dynamodb"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+
 	"github.com/sorabhlahoti/golang-serverless-project/pkg/handlers"
 )
 
-var (
-	dynaClient dynamodbiface.DynamoDBAPI
-)
-
-func main() {
-
-	//Aws dynamodn setup
-	region := os.Getenv("AWS_REGION")
-	sess, err := session.NewSession(&aws.Config{Region: aws.String(region)})
-
-	if err != nil {
-		return
-	}
-
-	dynaClient = dynamodb.New(sess)
-
-	//register lambda handler to process requests(events)
-	lambda.Start(handler)
-
-}
-
-const tableName = "go-serverless-project"
-
-func handler(req events.APIGatewayProxyRequest) (*event.APIGatewayProxyResponse, error) {
+func handler(req events.APIGatewayProxyRequest) (events.APIGatewayProxyResponse, error) {
 
 	switch req.HTTPMethod {
 
@@ -55,5 +33,28 @@ func handler(req events.APIGatewayProxyRequest) (*event.APIGatewayProxyResponse,
 		return handlers.UnhandledMethod()
 
 	}
+
+}
+
+var (
+	dynaClient *dynamodb.Client
+	tableName  = "go-serverless-project"
+)
+
+func main() {
+
+	//Aws dynamodn setup
+	region := os.Getenv("AWS_REGION")
+	ctx := context.Background()
+	cfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(region))
+
+	if err != nil {
+		return
+	}
+
+	dynaClient = dynamodb.NewFromConfig(cfg)
+
+	//register lambda handler to process requests(events)
+	lambda.Start(handler)
 
 }

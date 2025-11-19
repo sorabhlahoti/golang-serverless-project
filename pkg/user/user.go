@@ -1,13 +1,12 @@
 package user
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/service/dynamodb"
-	"github.com/aws/aws-sdk-go/service/dynamodb/dynamodbattribute"
-	"github.com/aws/aws-sdk-go/service/dynamodb/dynamodbiface"
+	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/sorabhlahoti/golang-serverless-project/pkg/validators"
 )
 
@@ -29,63 +28,62 @@ type User struct {
 	LastName  string `json:"lastName"`
 }
 
-func FetchUser(email, tableName string, dynaClient dynamodbiface.DynamoDBAPI) (*User, error) {
+func awsString(s string) *string { return &s } // helper for *string
+func awsBool(b bool) *bool       { return &b } // helper for *bool
 
-	input := &dynamodb.GetItemInput{
-		Key: map[string]*dynamodb.AttributeValue{
-			"email": {
-				S: aws.String(email),
-			},
-		},
-		TableName: aws.String(tableName),
-	}
+func FetchUser(ctx context.Context, email, table string, ddb *dynamodb.Client) (*User, error) {
 
-	result, err := dynaClient.GetItem(input)
+	key, err := attributevalue.MarshalMap(map[string]string{"email": email})
 
 	if err != nil {
 		return nil, errors.New(ErrorFailedToFetchRecord)
 	}
 
-	item := new(User)
-
-	err = dynamodbattribute.UnmarshalMap(result.Item, item)
-
-	if err != nil {
-		return nil, errors.New(ErrorFailedToUnmarshalRecord)
-	}
-
-	return item, nil
-
-}
-
-func FetchUsers(tableName string, dynaClient dynamodbiface.DynamoDBAPI) (*[]User, error) {
-
-	input := &dynamodb.ScanInput{
-		TableName: aws.String(tableName),
-	}
-
-	result, err := dynaClient.Scan(input)
+	out, err := ddb.GetItem(ctx, &dynamodb.GetItemInput{
+		TableName:      &table,
+		Key:            key,
+		ConsistentRead: awsBool(true),
+	})
 
 	if err != nil {
 		return nil, errors.New(ErrorFailedToFetchRecord)
 	}
-
-	item := new([]User)
-
-	err = dynamodbattribute.UnmarshalListOfMaps(result.Items, item)
-
-	if err != nil {
-		return nil, errors.New(ErrorFailedToUnmarshalRecord)
+	if out.Item == nil {
+		return &User{}, nil
 	}
 
-	return item, nil
-
-}
-
-func CreateUser(req events.APIGatewayProxyRequest, tableName string, dynaClient dynamodbiface.DynamoDBAPI) (*User, error) {
 	var u User
 
-	if err := json.Unmarshal([]byte(req.Body), &u); err != nil {
+	if err := attributevalue.UnmarshalMap(out.Item, &u); err != nil {
+		return nil, errors.New(ErrorFailedToUnmarshalRecord)
+	}
+
+	return &u, nil
+
+}
+
+func FetchUsers(ctx context.Context, tableName string, ddb *dynamodb.Client) (*[]User, error) {
+
+	out, err := ddb.Scan(ctx, &dynamodb.ScanInput{TableName: &tableName})
+
+	if err != nil {
+		return nil, errors.New(ErrorFailedToFetchRecord)
+	}
+
+	var items []User
+
+	if err := attributevalue.UnmarshalListOfMaps(out.Items, &items); err != nil {
+		return nil, errors.New(ErrorFailedToUnmarshalRecord)
+	}
+
+	return &items, nil
+
+}
+
+func CreateUser(ctx context.Context, body string, tableName string, ddb *dynamodb.Client) (*User, error) {
+	var u User
+
+	if err := json.Unmarshal([]byte(body), &u); err != nil {
 		return nil, errors.New(ErrorInvalidUserData)
 	}
 
@@ -93,23 +91,23 @@ func CreateUser(req events.APIGatewayProxyRequest, tableName string, dynaClient 
 		return nil, errors.New(ErrorInvalidEmail)
 	}
 
-	currentUser, _ := FetchUser(u.Email, tableName, dynaClient)
+	currentUser, _ := FetchUser(ctx, u.Email, tableName, ddb)
 
 	if currentUser != nil && len(currentUser.Email) != 0 {
 		return nil, errors.New(ErrorUserAlreadyExists)
 	}
 
-	av, err := dynamodbattribute.MarshalMap(u)
+	av, err := attributevalue.MarshalMap(u)
 
 	if err != nil {
 		return nil, errors.New(ErrorCouldNotMarshalItem)
 	}
 
-	input := &dynamodb.PutItemInput{
-		Item:      av,
-		TableName: aws.String(tableName),
-	}
-	_, err = dynaClient.PutItem(input)
+	_, err = ddb.PutItem(ctx, &dynamodb.PutItemInput{
+		TableName:           &tableName,
+		Item:                av,
+		ConditionExpression: awsString("attribute_not_exists(email)"),
+	})
 
 	if err != nil {
 		return nil, errors.New(ErrorCouldNotDynamoPutItem)
@@ -118,36 +116,34 @@ func CreateUser(req events.APIGatewayProxyRequest, tableName string, dynaClient 
 	return &u, nil
 }
 
-func UpdateUser(req events.APIGatewayProxyRequest, tableName string, dynaClient dynamodbiface.DynamoDBAPI) (
+func UpdateUser(ctx context.Context, body string, tableName string, ddb *dynamodb.Client) (
 	*User,
 	error) {
 
 	var u User
 
-	if err := json.Unmarshal([]byte(req.body), &u); err != nil {
+	if err := json.Unmarshal([]byte(body), &u); err != nil {
 
 		return nil, errors.New(ErrorInvalidEmail)
 
 	}
 
-	currentUser, _ := FetchUser(u.Email, tableName, dynaClient)
+	currentUser, _ := FetchUser(ctx, u.Email, tableName, ddb)
 
 	if currentUser != nil && len(currentUser.Email) == 0 {
 		return nil, errors.New(ErrorUserDoesNotExist)
 	}
 
-	av, err := dynamodbattribute.MarshalMap(u)
+	av, err := attributevalue.MarshalMap(u)
 
 	if err != nil {
 		return nil, errors.New(ErrorCouldNotMarshalItem)
 	}
 
-	input := &dynamodb.PutItemInput{
+	_, err = ddb.PutItem(ctx, &dynamodb.PutItemInput{
+		TableName: &tableName,
 		Item:      av,
-		TableName: aws.String(tableName),
-	}
-
-	_, err = dynaClient.PutItem(input)
+	})
 
 	if err != nil {
 		return nil, errors.New(ErrorCouldNotDynamoPutItem)
@@ -157,18 +153,16 @@ func UpdateUser(req events.APIGatewayProxyRequest, tableName string, dynaClient 
 
 }
 
-func DeleteUser(req events.APIGatewayProxyRequest, tabelName string, dynaCLient dynamodbiface.DynamoDBAPI) error {
-	email := req.QueryStringParameters["email"]
-	input := &dynamodb.DeleteItemInput{
-		Key: map[string]*dynamodb.AttributeValue{
-			"email": {
-				S: aws.String(email),
-			},
-		},
-		TableName: aws.String(tabelName),
+func DeleteUser(ctx context.Context, email, tableName string, ddb *dynamodb.Client) error {
+	key, err := attributevalue.MarshalMap(map[string]string{"email": email})
+	if err != nil {
+		return errors.New(ErrorCouldNotDeleteItem)
 	}
-
-	_, err := dynaCLient.DeleteItem(input)
+	_, err = ddb.DeleteItem(ctx, &dynamodb.DeleteItemInput{
+		TableName:           &tableName,
+		Key:                 key,
+		ConditionExpression: awsString("attribute_exists(email)"),
+	})
 
 	if err != nil {
 		return errors.New(ErrorCouldNotDeleteItem)
